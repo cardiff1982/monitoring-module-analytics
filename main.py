@@ -1,6 +1,7 @@
-import requests
-import Classes
 from mdutils.mdutils import MdUtils
+import requests
+import yaml
+import Classes
 
 
 def make_usage_decision(intensity: str, usage_type: str) -> str:
@@ -26,7 +27,7 @@ def make_usage_decision(intensity: str, usage_type: str) -> str:
     return decision
 
 
-def write_report_file(teams: dict):
+def write_report_file(teams: dict, prices: dict):
     """
     Funtion generates report in Marksdown format and outputes it to report.md file
     :param teams: dict of teams with resources
@@ -36,15 +37,26 @@ def write_report_file(teams: dict):
         report_file = MdUtils(file_name="report", title="Teams resources usage report")
         for team, team_data in teams.items():
             report_file.new_header(level=1, title="Team: " + team)
-            report_file_data = ["Resource", "Dimension", "mean", "median", "usage_type", "intencity", "decisiion"]
+            report_file_data = ["Resource", "Dimension", "mean", "median", "usage_type", "intencity", "decisiion",
+                                "Cost"]
             for server_name, server_data in team_data.items():
                 for dimension_name, dimension_data in server_data.items():
                     decision = make_usage_decision(dimension_data["intensity"], dimension_data["usage_type"])
                     report_file_data.extend([server_name, dimension_name, str(dimension_data["mean"]),
                                              str(dimension_data["median"]), dimension_data["usage_type"],
-                                             dimension_data["intensity"], decision])
-            report_file.new_table(columns=7, rows=len(team_data) * len(server_data) + 1, text=report_file_data,
+                                             dimension_data["intensity"], decision,
+                                             "" if decision != Classes.Decisions.DELETE.value
+                                             else prices.get("values").get(server_name).get(dimension_name)])
+            report_file.new_table(columns=8, rows=len(team_data) * len(server_data) + 1, text=report_file_data,
                                   text_align='center')
+        report_file.new_header(level=1, title="Resources TCO")
+        report_file_tco_data = ["Resource", "TCO"]
+        for name, dimension_prices in prices.get("values").items():
+            server_tco = 0
+            for dimension, price in dimension_prices.items():
+                server_tco += price
+            report_file_tco_data.extend([name, server_tco])
+        report_file.new_table(columns=2, rows=len(prices.get("values").items()) + 1, text=report_file_tco_data)
         report_file.create_md_file()
     except IOError:
         print("I/O Error")
@@ -151,28 +163,36 @@ def get_server_stats(server) -> dict:
                     "intensity": cpu_usage_data["usage_intensity"]},
             "RAM": {"mean": ram_avg, "median": ram_median, "usage_type": ram_usage_data["usage_type"],
                     "intensity": ram_usage_data["usage_intensity"]},
-            "NETFLOW": {"mean": netflow_avg, "median": netflow_median, "usage_type": netflow_usage_data["usage_type"],
+            "NetFlow": {"mean": netflow_avg, "median": netflow_median, "usage_type": netflow_usage_data["usage_type"],
                         "intensity": netflow_usage_data["usage_intensity"]}}
 
 
 def get_data():
     """
     Function to get monitoring module data via http protocol
-    :return: string with data from http response
+    :return: dict with load_data and prices keys
     """
     with requests.Session() as session:
-        url = "http://localhost:21122/monitoring/infrastructure/using/summary/1"
-        response = session.get(url=url)
-    return response.text
+        url_load_data = "http://localhost:21122/monitoring/infrastructure/using/summary/1"
+        url_prices = "http://localhost:21122//monitoring/infrastructure/using/prices"
+        response_load_data = session.get(url=url_load_data)
+        response_prices = session.get(url=url_prices)
+
+    return {"load_data": response_load_data.text,
+            "prices": response_prices.text}
+
 
 def get_resourceprices():
     pass
 
+
 def main():
     result_dict = {}
-    input_data = get_data()
+    incoming_data = get_data()
+    load_data = incoming_data.get("load_data")
+    resource_prices = yaml.load(incoming_data.get("prices"), Loader=yaml.FullLoader)
 
-    teams = get_teams(input_data)
+    teams = get_teams(load_data)
     for team in teams:
         result_dict.update({team.name: None})
         team_servers = {}
@@ -181,7 +201,7 @@ def main():
             team_servers.update({server.name: servers_data})
             result_dict.update({team.name: team_servers})
 
-    write_report_file(result_dict)
+    write_report_file(result_dict, resource_prices)
     print(result_dict)
 
 
